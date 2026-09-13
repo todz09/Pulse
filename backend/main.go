@@ -1,37 +1,49 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 )
 
-// CheckResult holds everything we learn from probing URL.
-type CheckResult struct {
-	URL         string
-	Up         bool
-	StatusCode  int
-	ResponseTime time.Duration
-	Error       error
-	CheckAt    time.Time
+// Monitor represents one row from the "monitors" table.
+type Monitor struct {
+	ID   int
+	URL  string
+	Name string
 }
 
-// checkURL sends an HTTP GET request to URL and reports whether it's up.
-func checkURL (url string) CheckResult{
-	start := time.Now()
-	client := http.Client{
-		Timeout: 10 * time.Second,
-	}
+// CheckResult holds everything we learn from probing one URL.
+type CheckResult struct {
+	MonitorID    int
+	URL          string
+	Up           bool
+	StatusCode   int
+	ResponseTime time.Duration
+	Error        error
+	CheckedAt    time.Time
+}
 
-	resp, err := client.Get(url)
+func checkURL(m Monitor) CheckResult {
+	start := time.Now()
+
+	client := http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(m.URL)
 
 	elapsed := time.Since(start)
-	
+
 	result := CheckResult{
-		URL:         url,
+		MonitorID:    m.ID,
+		URL:          m.URL,
 		ResponseTime: elapsed,
-		CheckAt:    start,
+		CheckedAt:    start,
 	}
 
 	if err != nil {
@@ -41,50 +53,111 @@ func checkURL (url string) CheckResult{
 	}
 	defer resp.Body.Close()
 
-	result.Up = resp.StatusCode >= 200 && resp.StatusCode < 400
 	result.StatusCode = resp.StatusCode
+	result.Up = resp.StatusCode >= 200 && resp.StatusCode < 400
+
 	return result
 }
 
-func main() {
-	urls := []string{
-		"https://www.google.com",
-		"https://www.github.com",
-		"https://www.this-site-does-not-exist-pulse-test.com",
+func printResult(r CheckResult) {
+	status := "DOWN"
+	if r.Up {
+		status = "UP"
 	}
+	if r.Error != nil {
+		fmt.Printf("[%s] %s - error: %v\n", status, r.URL, r.Error)
+		return
+	}
+	fmt.Printf("[%s] %s - status: %d - took: %v\n", status, r.URL, r.StatusCode, r.ResponseTime)
+}
+
+func main() {
+	// Load the .env file so os.Getenv can see DATABASE_URL
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file: ", err)
+	}
+
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+
+	// Create a connection pool to the database
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		log.Fatal("Unable to connect to database: ", err)
+	}
+	defer pool.Close()
+
+	// Fetch all monitors from the database
+	monitors, err := fetchMonitors(ctx, pool)
+	if err != nil {
+		log.Fatal("Unable to fetch monitors: ", err)
+	}
+
+	fmt.Printf("Found %d monitors. Checking...\n\n", len(monitors))
 
 	var wg sync.WaitGroup
-	results := make(chan CheckResult, len(urls))
+	results := make(chan CheckResult, len(monitors))
 
-	for _, url := range urls{
+	for _, m := range monitors {
 		wg.Add(1)
-		go func(u string){
+		go func(mon Monitor) {
 			defer wg.Done()
-			result := checkURL(u)
+			result := checkURL(mon)
 			results <- result
-		}(url)
+		}(m)
 	}
+
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	for result := range results{
+	for result := range results {
 		printResult(result)
+		err := saveCheck(ctx, pool, result)
+		if err != nil {
+			fmt.Printf("  failed to save check for %s: %v\n", result.URL, err)
+		}
 	}
 }
 
-// printResult prints a CheckResult in a human-readable line.
-func printResult(result CheckResult) {
-	status := "DOWN"
-	if result.Up {
-		status = "UP"
+// fetchMonitors reads every row from the "monitors" table.
+func fetchMonitors(ctx context.Context, pool *pgxpool.Pool) ([]Monitor, error) {
+	rows, err := pool.Query(ctx, "SELECT id, url, name FROM monitors")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var monitors []Monitor
+	for rows.Next() {
+		var m Monitor
+		err := rows.Scan(&m.ID, &m.URL, &m.Name)
+		if err != nil {
+			return nil, err
+		}
+		monitors = append(monitors, m)
+	}
+	return monitors, nil
+}
+
+// saveCheck inserts one check result into the "checks" table.
+func saveCheck(ctx context.Context, pool *pgxpool.Pool, r CheckResult) error {
+	var errMsg *string
+	if r.Error != nil {
+		msg := r.Error.Error()
+		errMsg = &msg
 	}
 
-	if result.Error != nil {
-		fmt.Printf("[%s] %s - error: %v\n", status, result.URL, result.Error)
-		return
-	}
-
-	fmt.Printf("[%s] %s - status: %d - took: %v\n", status, result.URL, result.StatusCode, result.ResponseTime)
+	_, err := pool.Exec(ctx,
+		`INSERT INTO checks (monitor_id, up, status_code, response_time_ms, error_message)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		r.MonitorID, r.Up, r.StatusCode, r.ResponseTime.Milliseconds(), errMsg,
+	)
+	return err
 }
