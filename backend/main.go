@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -52,8 +53,23 @@ func main() {
 		"https://www.this-site-does-not-exist-pulse-test.com",
 	}
 
-	for _, url := range urls {
-		result := checkURL(url)
+	var wg sync.WaitGroup
+	results := make(chan CheckResult, len(urls))
+
+	for _, url := range urls{
+		wg.Add(1)
+		go func(u string){
+			defer wg.Done()
+			result := checkURL(u)
+			results <- result
+		}(url)
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for result := range results{
 		printResult(result)
 	}
 }
