@@ -1,0 +1,23 @@
+# Go
+backend/pulse
+backend/*.exe
+
+# Node.js / React
+node_modules/
+dashboard/node_modules/
+alertservice/node_modules/
+dashboard/dist/
+dashboard/build/
+
+# Environment variables / secrets — NEVER commit these
+.env
+.env.local
+*.env
+
+# OS junk files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
