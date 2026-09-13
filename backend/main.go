@@ -72,8 +72,7 @@ func printResult(r CheckResult) {
 }
 
 func main() {
-	// Load the .env file so os.Getenv can see DATABASE_URL
-	err := godotenv.Load()
+err := godotenv.Load()
 	if err != nil {
 		log.Fatal("Error loading .env file: ", err)
 	}
@@ -85,20 +84,33 @@ func main() {
 
 	ctx := context.Background()
 
-	// Create a connection pool to the database
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		log.Fatal("Unable to connect to database: ", err)
 	}
 	defer pool.Close()
 
-	// Fetch all monitors from the database
+	// Run one check cycle immediately on startup
+	runCheckCycle(ctx, pool)
+
+	// Then run every 5 minutes, forever
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		runCheckCycle(ctx, pool)
+	}
+}
+
+// runCheckCycle fetches all monitors, checks them concurrently, and saves results.
+func runCheckCycle(ctx context.Context, pool *pgxpool.Pool) {
 	monitors, err := fetchMonitors(ctx, pool)
 	if err != nil {
-		log.Fatal("Unable to fetch monitors: ", err)
+		fmt.Println("Unable to fetch monitors:", err)
+		return
 	}
 
-	fmt.Printf("Found %d monitors. Checking...\n\n", len(monitors))
+	fmt.Printf("\n--- Checking %d monitors at %s ---\n", len(monitors), time.Now().Format(time.RFC1123))
 
 	var wg sync.WaitGroup
 	results := make(chan CheckResult, len(monitors))
