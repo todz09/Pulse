@@ -72,14 +72,19 @@ func printResult(r CheckResult) {
 }
 
 func main() {
-err := godotenv.Load()
+	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file: ", err)
+		log.Println("No .env file found, relying on system environment variables")
 	}
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		log.Fatal("DATABASE_URL is not set")
+	}
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 	}
 
 	ctx := context.Background()
@@ -89,6 +94,9 @@ err := godotenv.Load()
 		log.Fatal("Unable to connect to database: ", err)
 	}
 	defer pool.Close()
+
+	// Start the HTTP API in the background
+	go startServer(pool, port)
 
 	// Run one check cycle immediately on startup
 	runCheckCycle(ctx, pool)
