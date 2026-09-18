@@ -1,4 +1,5 @@
 import {useState, useEffect} from 'react';
+import MonitorCard from './MonitorCard';
 import './App.css';
 
 const API_URL = 'http://localhost:8080';
@@ -10,6 +11,8 @@ function App(){
 
   useEffect(() => {
     fetchMonitors();
+    const interval = setInterval(fetchMonitors, 30000);
+    return () => clearInterval(interval);
   },[])
 
   async function fetchMonitors() {
@@ -29,32 +32,28 @@ function App(){
   }
 
   if(loading) {
-    return <div className = "app"><p>Loading Monitors...</p></div>
+    return <div className = "app-status"><p>Loading Monitors...</p></div>
   }
   if (error){
-    return <div className="app"><p>Error: {error}</p></div>
+    return <div className="app-status"><p>Error: {error}</p></div>
   }
+
+  const upCount = monitors.filter((m) => m.up).length;
 
   return(
     <div className="app">
+      <header className="app-header">
       <h1>Pulse</h1>
-      <p>Uptime Monitoring dasboard</p>
+      <p>{upCount} of {monitors.length} monitors Operational</p>
+      </header>
 
       <div className="monitor-list">
         {monitors.map((monitor) => (
-          <div key={monitor.id} className="monitor-card">
-            <h2>{monitor.name}</h2>
-            <p>{monitor.url}</p>
-            <p>Status: {monitor.up ? 'UP' : 'Down'}</p>
-            <p>Response time : {monitor.response_time_ms}</p>
-
-          </div>
+          <MonitorCard key={monitor.id} monitor={monitor} />
         ))}
-
       </div>
-
     </div>
-  )
+  );
 }
 
 export default App;
